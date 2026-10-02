@@ -296,9 +296,102 @@ ul{padding:0;list-style:none}
     <section id="pset" hidden>
       <div class="form">
         <div class="panel">
-          <h2>Ekranı başka bilgisayarda göstermek</h2>
-          <p>Projeksiyon bilgisayarında bu sayfanın aynı bağlantısını açın ve Ekranı göster düğmesine basın. Bağlantının sonuna <strong>#ekran</strong> eklerseniz ekran kendiliğinden açılır. Girilen her oy birkaç saniye içinde o ekrana yansır.</p>
-          <p class="mut" style="margin-top:6px;font-size:13px">Üstteki "Canlı paylaşım açık" etiketi iki bilgisayarda da görünmelidir. Oy girecek kişinin bu sayfaya Katkıda bulunan (Contributor) veya daha yüksek erişimi olmalı.</p>
+          <h2>Canlı bağlantı (iki bilgisayar)</h2>
+          <p>Oy giren bilgisayar ile projeksiyon bilgisayarı aynı Google E-Tabloya bağlanır. Girilen oylar birkaç saniye içinde ekrana yansır ve E-Tabloda ayrıca kayıt altında kalır.</p>
+          <p class="mut" id="cStatus" style="margin:8px 0;font-size:13px"></p>
+          <div class="form">
+            <div class="fld"><label for="cUrl">Web uygulaması adresi</label><input type="text" id="cUrl" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" spellcheck="false"></div>
+            <div class="fld"><label for="cPin">PIN</label><input type="password" id="cPin" autocomplete="off"><small>Apps Script kodundaki PIN ile aynı olmalı.</small></div>
+            <div class="acts">
+              <button class="btn primary" id="cConnect">Bağlan</button>
+              <button class="btn" id="cLink">Ekran bağlantısını kopyala</button>
+              <button class="btn danger" id="cOff">Bağlantıyı kaldır</button>
+            </div>
+            <small class="mut">"Ekran bağlantısını kopyala" ile aldığınız adresi projeksiyon bilgisayarında açın. Bağlantı ayarını kendisi yükler ve ekranı açar.</small>
+          </div>
+          <details style="margin-top:12px">
+            <summary style="cursor:pointer;font-weight:600">Kurulum adımları ve Apps Script kodu</summary>
+            <ol style="margin:10px 0 10px 18px;padding:0;display:grid;gap:6px">
+              <li>Google Drive'da yeni bir Google E-Tablo açın (örneğin "OAB Seçim Sayımı").</li>
+              <li>Uzantılar menüsünden Apps Komut Dosyası'nı açın. Editördeki kodu silip aşağıdaki kodu yapıştırın.</li>
+              <li>Kodun ilk satırındaki <code>DEGISTIR</code> yerine kendi PIN'inizi yazın. Kaydedin.</li>
+              <li>Dağıt, Yeni dağıtım, tür olarak Web uygulaması seçin. "Şu kullanıcı olarak yürüt" için Ben, "Erişimi olanlar" için Herkes seçip Dağıt'a basın. İzin isterse onaylayın.</li>
+              <li>Çıkan "Web uygulaması URL'si" adresini (sonu /exec) yukarıya yapıştırın, PIN'i yazıp Bağlan'a basın.</li>
+              <li>Kodu sonradan değiştirirseniz Dağıt, Dağıtımları yönet, Düzenle ile yeni sürüm yayınlayın.</li>
+            </ol>
+            <div class="fld"><textarea class="sm" id="gsCode" readonly style="min-height:200px">// OAB seçim sayımı: canlı paylaşım sunucusu (Google Apps Script).
+// Bu kodu bir Google E-Tablonun Apps Script editörüne yapıştırın.
+// PIN'i kendinize göre değiştirin. Sitedeki PIN ile aynı olmalıdır.
+var PIN = 'DEGISTIR';
+
+function out_(o) {
+  return ContentService.createTextOutput(JSON.stringify(o))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function sheet_(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function readState_() {
+  var v = sheet_('Durum').getRange('A1').getValue();
+  return v ? JSON.parse(v) : null;
+}
+
+function doGet(e) {
+  var p = e.parameter || {};
+  if (p.pin !== PIN) return out_({ ok: false, error: 'pin' });
+  var st = readState_();
+  if (!st) return out_({ ok: true, rev: 0, state: null });
+  var since = parseInt(p.since, 10);
+  if (since >= 0 &amp;&amp; st.rev &lt;= since) return out_({ ok: true, rev: st.rev });
+  return out_({ ok: true, rev: st.rev, state: st });
+}
+
+function doPost(e) {
+  var p = e.parameter || {};
+  if (p.pin !== PIN) return out_({ ok: false, error: 'pin' });
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var body = JSON.parse(e.postData.contents);
+    var st = body.state;
+    if (!st || !st.names || !st.votes) return out_({ ok: false, error: 'bad' });
+    var cur = readState_();
+    if (cur &amp;&amp; (st.rev | 0) &lt;= (cur.rev | 0)) {
+      return out_({ ok: false, error: 'stale', rev: cur.rev, state: cur });
+    }
+    sheet_('Durum').getRange('A1').setValue(JSON.stringify(st));
+    record_(st);
+    return out_({ ok: true, rev: st.rev });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Sonuçları okunabilir bir tablo olarak "Sonuç" sayfasına yazar.
+function record_(st) {
+  var sh = sheet_('Sonuç');
+  var rows = [['Aday No', 'Aday', 'Oy']];
+  var total = 0;
+  for (var i = 0; i &lt; st.names.length; i++) {
+    rows.push([i + 1, st.names[i], st.votes[i]]);
+    total += st.votes[i];
+  }
+  sh.clearContents();
+  sh.getRange(1, 1, rows.length, 3).setValues(rows);
+  sh.getRange(1, 5, 5, 2).setValues([
+    ['Geçerli pusula', st.ballots],
+    ['Geçersiz pusula', st.invalid],
+    ['Toplam oy', total],
+    ['Durum', st.done ? 'Sayım tamamlandı' : 'Sayım sürüyor'],
+    ['Son güncelleme', new Date()]
+  ]);
+}
+</textarea></div>
+            <div class="acts" style="margin-top:8px"><button class="btn" id="gsCopy">Kodu kopyala</button></div>
+          </details>
         </div>
         <div class="panel">
           <h2>Seçim bilgileri</h2>
@@ -335,7 +428,7 @@ ul{padding:0;list-style:none}
             <label for="sBackup">Yedek</label>
             <textarea class="sm" id="sBackup" placeholder="Yedek metnini buraya yapıştırıp geri yükleyin"></textarea>
             <div class="acts"><button class="btn" id="btnBackup">Yedeği kopyala</button><button class="btn" id="btnRestore">Yedekten geri yükle</button></div>
-            <small>Sayım canlı paylaşımla kaydedilir. Sayım günü yedeği kopyalayıp bir yere yapıştırmanız yine de iyi olur.</small>
+            <small>Sayım bu tarayıcıda, canlı bağlantı kuruluysa Google E-Tablo'da da saklanır. Sayım günü yedeği kopyalayıp bir yere yapıştırmanız yine de iyi olur.</small>
           </div>
         </div>
       </div>
@@ -367,11 +460,14 @@ function load(){
   return def();
 }
 var S=load(),tab='say',sel=0,fin='idle',screenOpen=false,needReveal=false,lastFb=null,storageOk=true,pend=null,prevDone=S.done,wake=null,tt=null;
-var dbDoc=null,syncSt='wait',synced=false,RO=false,dirty=false,writing=false,lastSave=0;
+var CFG=null,syncSt='none',synced=false,RO=false,dirty=false,writing=false,unsent=false,touched=false,lastSave=0,pollT=null,lastErr='';
+try{CFG=JSON.parse(localStorage.getItem('oab-secim-cfg'));if(!CFG||!CFG.u||!CFG.p)CFG=null}catch(e){CFG=null}
+function saveCfg(c){CFG=c;try{if(c)localStorage.setItem('oab-secim-cfg',JSON.stringify(c));else localStorage.removeItem('oab-secim-cfg')}catch(e){}}
 var P={auto:true,sound:true};
 try{var pp=JSON.parse(localStorage.getItem('oab-secim-prefs'));if(pp){P.auto=pp.auto!==false;P.sound=pp.sound!==false}}catch(e){}
 function saveP(){try{localStorage.setItem('oab-secim-prefs',JSON.stringify(P))}catch(e){}}
-function locked(){return S.done||RO}
+function pending(){return !!CFG&&syncSt==='wait'}
+function locked(){return S.done||RO||pending()}
 var ch=null;try{ch=('BroadcastChannel' in window)?new BroadcastChannel(KEY):null}catch(e){}
 function $(s){return document.querySelector(s)}
 function esc(t){return String(t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -389,62 +485,82 @@ function save(){
   S.rev=(S.rev|0)+1;
   storeLocal();
   try{if(ch)ch.postMessage(S.rev)}catch(e){}
+  if(CFG&&!synced)touched=true;
+  unsent=true;
   renderAll();
   pushRemote();
 }
 function sync(){var l=load();if((l.rev|0)>(S.rev|0)){S=l;renderAll()}}
 
-/* ---------- canlı paylaşım (db) ---------- */
-function payload(){var o=JSON.parse(JSON.stringify(S));o.log=o.log.slice(-60);o.at=Date.now();return o}
-function pushRemote(){if(!dbDoc||RO)return;dirty=true;if(!writing)flush()}
+/* ---------- canlı paylaşım (Google Apps Script) ---------- */
+function payload(){var o=JSON.parse(JSON.stringify(S));delete o.log;o.at=Date.now();return o}
+function api(method,body,params){
+  var u=CFG.u+'?pin='+encodeURIComponent(CFG.p)+(params||'');
+  var ctl=('AbortController' in window)?new AbortController():null,t=setTimeout(function(){if(ctl)ctl.abort()},15000);
+  var opt=method==='POST'?{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(body),redirect:'follow'}:{method:'GET',redirect:'follow'};
+  if(ctl)opt.signal=ctl.signal;
+  return fetch(u,opt).then(function(r){clearTimeout(t);return r.json()},function(e){clearTimeout(t);throw e});
+}
+function schedule(){clearTimeout(pollT);if(!CFG)return;pollT=setTimeout(function(){pull()},screenOpen?3000:6000)}
+function setErr(m){lastErr=m;syncSt='err'}
+function pull(){
+  if(!CFG)return;
+  clearTimeout(pollT);
+  api('GET',null,'&since='+(synced?(S.rev|0):-1)).then(function(r){
+    if(!r||r.ok!==true){setErr(r&&r.error==='pin'?'PIN hatalı':'Sunucu yanıtı anlaşılamadı');renderAll();schedule();return}
+    lastErr='';
+    if(!synced){
+      if(r.state&&touched&&(r.state.rev|0)<(S.rev|0)){synced=true;syncSt='ok';touched=false;unsent=true;pushRemote()}
+      else{if(r.state)adopt(r.state);synced=true;syncSt='ok';touched=false}
+    }else{
+      syncSt='ok';
+      if(r.state&&(r.rev|0)>(S.rev|0))adopt(r.state);
+      else if(unsent&&!writing)pushRemote();
+    }
+    renderAll();schedule();
+  },function(){setErr('Sunucuya ulaşılamıyor');renderAll();schedule()});
+}
+function pushRemote(){if(!CFG||!synced||RO)return;dirty=true;if(!writing)flush()}
 function flush(){
   writing=true;var tries=0;
   (function loop(){
     if(!dirty){writing=false;updChip();return}
     dirty=false;
-    dbDoc.set(payload()).then(function(){tries=0;syncSt='ok';lastSave=Date.now();updChip();loop()},function(e){
-      var c=e&&e.code;
-      if(c==='invalid_argument'){RO=true;dirty=false;writing=false;resync();renderAll();return}
-      if(tries<3&&(c==='unavailable'||c==='resource_exhausted')){tries++;dirty=true;syncSt='err';updChip();setTimeout(loop,1500*tries);return}
-      syncSt='err';dirty=false;writing=false;updChip();
-    });
+    api('POST',{state:payload()}).then(function(r){
+      if(r&&r.ok){tries=0;syncSt='ok';lastErr='';lastSave=Date.now();if(!dirty)unsent=false;updChip();loop()}
+      else if(r&&r.error==='stale'&&r.state){writing=false;unsent=false;adopt(r.state);toast('Başka bir bilgisayardaki daha yeni sayım yüklendi')}
+      else fail(r&&r.error==='pin'?'PIN hatalı':'Kayıt başarısız');
+    },function(){fail('Sunucuya ulaşılamıyor')});
+    function fail(m){
+      tries++;lastErr=m;syncSt='err';updChip();
+      if(tries<4&&m!=='PIN hatalı'){dirty=true;setTimeout(loop,1500*tries)}else{writing=false}
+    }
   })();
 }
-function adopt(r){S=fix(r);storeLocal();renderAll()}
-function resync(){if(!dbDoc)return;dbDoc.get().then(function(s){if(s.exists)adopt(s.data())},function(){})}
-function onRemote(snap){
-  var md=snap.metadata||{};
-  if(snap.exists){
-    var r=snap.data();
-    if(!synced||((r.rev|0)>(S.rev|0)))adopt(r);
-  }
-  if(!md.fromCache){synced=true;if(syncSt==='wait')syncSt='ok'}
-  updChip();
-  if(screenOpen)renderScreen();
-}
-function initDb(){
-  if(!window.claude||!window.claude.use){syncSt='none';renderAll();return}
-  window.claude.use('db').then(function(db){
-    if(!db){syncSt='none';renderAll();return}
-    return window.claude.use('user').then(function(user){
-      return user?user.can('data.write'):null;
-    }).then(function(cw){
-      if(cw===false)RO=true;
-      dbDoc=db.doc('oab/state');
-      dbDoc.onSnapshot(onRemote,function(e){syncSt=(e&&e.code==='revoked')?'none':'err';updChip()});
-      renderAll();
-    });
-  }).catch(function(){syncSt='none';renderAll()});
+function adopt(r){var lg=S.log;S=fix(r);if(!r.log)S.log=lg||[];storeLocal();renderAll()}
+function startSync(){
+  clearTimeout(pollT);synced=false;touched=false;
+  if(!CFG){syncSt='none';renderAll();return}
+  syncSt='wait';renderAll();pull();
 }
 function syncLabel(){
-  if(RO)return ['','İzleme modu, giriş kapalı'];
+  if(!CFG)return ['warn','Canlı bağlantı kurulmadı: yalnızca bu bilgisayar'];
   if(syncSt==='ok')return ['ok','Canlı paylaşım açık'];
   if(syncSt==='wait')return ['','Paylaşıma bağlanıyor'];
-  if(syncSt==='err')return ['warn','Paylaşım kesildi, yeniden deneniyor'];
-  return ['warn','Paylaşım yok: yalnızca bu bilgisayar'];
+  return ['warn','Paylaşım kesildi: '+(lastErr||'yeniden deneniyor')];
 }
-if(ch)ch.onmessage=sync;
-addEventListener('storage',function(e){if(e.key===KEY)sync()});
+function cfgLink(){
+  var k=btoa(unescape(encodeURIComponent(JSON.stringify({u:CFG.u,p:CFG.p})))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  return location.origin+location.pathname+'#ekran&k='+k;
+}
+function decodeK(k){
+  try{var b=k.replace(/-/g,'+').replace(/_/g,'/');while(b.length%4)b+='=';var c=JSON.parse(decodeURIComponent(escape(atob(b))));return c&&c.u&&c.p?{u:c.u,p:c.p}:null}catch(e){return null}
+}
+function parseHash(){
+  var o={ekran:false,k:null};
+  location.hash.replace(/^#/,'').split('&').forEach(function(x){if(x==='ekran')o.ekran=true;else if(x.indexOf('k=')===0)o.k=x.slice(2)});
+  return o;
+}
 
 /* ---------- ses ve bildirim ---------- */
 var ac=null;
@@ -561,7 +677,7 @@ function undo(){if(locked()||!S.log.length)return;removeEntry(S.log[S.log.length
 function updChip(){
   var c=$('#chip');c.className='chip '+(S.done?'done':'live');
   c.innerHTML=(S.done?'':'<i class="dot"></i>')+(S.done?'Sayım tamamlandı':'Sayım sürüyor')+(storageOk?'':' · tarayıcı kaydı kapalı');
-  var s=$('#sync'),k=syncLabel();s.className='chip '+k[0];s.textContent=k[1];s.title=lastSave?'Son kayıt: '+hm(lastSave):'';
+  var s=$('#sync'),k=syncLabel();s.className='chip '+k[0];s.textContent=k[1];s.title=lastErr||(lastSave?'Son kayıt: '+hm(lastSave):'');
 }
 function updStrip(){
   $('#nBal').textContent=S.ballots;$('#nInv').textContent=S.invalid;$('#nTot').textContent=total();
@@ -574,6 +690,7 @@ function updStrip(){
 }
 function updPv(){
   var el=$('#pv'),q=inp.value.trim();
+  if(pending()){el.className='pv';el.textContent='Paylaşıma bağlanılıyor, birkaç saniye bekleyin.';return}
   if(RO){el.className='pv err';el.textContent='Bu hesapla giriş yapılamaz, yalnızca izleme açık.';return}
   if(S.done){el.className='pv';el.textContent='Sayım tamamlandı. Giriş yapmak için sayımı yeniden açın.';return}
   if(!q){
@@ -697,7 +814,7 @@ function renderScreen(){
     body='<div class="rg'+(R.length?'':' one')+'">'+left+right+'</div>';
     if(rk.ties.length)head+=rk.ties.map(function(t){return '<div class="sban">'+esc(t.text)+'</div>'}).join('');
   }
-  sc.innerHTML='<div id="sctl"><button class="btn sm" id="sf">Tam ekran</button><button class="btn sm" id="sx">Kapat (Esc)</button></div>'+head+body+((syncSt==='none'||syncSt==='err')?'<div id="ssync">Canlı bağlantı yok, bu ekran güncellenmeyecek</div>':'');
+  sc.innerHTML='<div id="sctl"><button class="btn sm" id="sf">Tam ekran</button><button class="btn sm" id="sx">Kapat (Esc)</button></div>'+head+body+((!CFG)?'<div id="ssync">Canlı bağlantı kurulmadı: yalnızca bu bilgisayardaki oylar görünür</div>':(syncSt==='err'?'<div id="ssync">Bağlantı kesildi, ekran güncellenmeyebilir</div>':''));
   if(needReveal){sc.classList.add('reveal');needReveal=false;setTimeout(function(){sc.classList.remove('reveal')},2600)}
   $('#sx').onclick=closeScreen;
   $('#sf').onclick=function(){try{var q=document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();if(q&&q.catch)q.catch(function(){})}catch(e){}};
@@ -720,6 +837,7 @@ function closeScreen(){
 function fillSet(){
   $('#sTitle').value=S.title;$('#sSub').value=S.sub||'';$('#sAsil').value=S.asil;$('#sYedek').value=S.yedek;$('#sMax').value=S.maxPer;
   $('#sLive').checked=!!S.live;$('#sNames').value=S.names.join('\n');
+  $('#cUrl').value=CFG?CFG.u:'';$('#cPin').value=CFG?CFG.p:'';
 }
 function numIn(id,min,max){var v=parseInt($(id).value,10);if(isNaN(v))return null;return Math.max(min,Math.min(max,v))}
 $('#sTitle').oninput=function(){S.title=this.value||def().title;save()};
@@ -756,6 +874,20 @@ $('#btnRestore').onclick=function(){
   ask('Mevcut sayımın yerine yedek yüklenecek.','Evet, geri yükle',function(){S=fix(o);save();fillSet();$('#sBackup').value='';toast('Yedek yüklendi')});
 };
 
+$('#cConnect').onclick=function(){
+  var u=$('#cUrl').value.trim(),p=$('#cPin').value;
+  if(!/^https:\/\/script\.google\.com\/(a\/macros\/[^\/\s]+\/|macros\/)s\/[^\s]+\/exec$/.test(u)){toast('Adres, sonu /exec ile biten Web uygulaması adresi olmalı');return}
+  if(!p){toast('PIN yazın');return}
+  saveCfg({u:u,p:p});startSync();toast('Bağlanılıyor');
+};
+$('#cOff').onclick=function(){saveCfg(null);lastErr='';startSync();fillSet();toast('Canlı bağlantı kaldırıldı')};
+$('#cLink').onclick=function(){if(!CFG){toast('Önce bağlantıyı kurun');return}copy(cfgLink(),'Ekran bağlantısı')};
+$('#gsCopy').onclick=function(){copy($('#gsCode').value,'Kod')};
+function updCfg(){
+  var k=syncLabel();
+  $('#cStatus').textContent='Durum: '+k[1]+(syncSt==='ok'&&lastSave?' · son kayıt '+hm(lastSave):'');
+}
+
 /* ---------- genel çizim ve olaylar ---------- */
 function renderAll(){
   if(!prevDone&&S.done)needReveal=true;
@@ -766,7 +898,7 @@ function renderAll(){
   inp.disabled=locked();$('#btnInv').disabled=locked();$('#btnUndo').disabled=locked()||!S.log.length;
   document.querySelectorAll('.step').forEach(function(b){b.disabled=locked()});
   document.querySelectorAll('#pset input,#pset textarea,#pset button,#voters').forEach(function(el){el.disabled=RO&&el.id!=='btnBackup'&&el.id!=='sBackup'});
-  updChip();updStrip();updPv();updBoard();updLive();updRecent();updFin();updRes();
+  updChip();updCfg();updStrip();updPv();updBoard();updLive();updRecent();updFin();updRes();
   if(screenOpen)renderScreen();
 }
 function setTab(t){
@@ -839,9 +971,14 @@ document.addEventListener('keydown',function(e){
 
 renderAll();
 setTab('say');
-if(location.hash==='#ekran')openScreen();
-addEventListener('hashchange',function(){if(location.hash==='#ekran'&&!screenOpen)openScreen()});
-initDb();
+(function(){
+  var o=parseHash();
+  if(o.k){var c=decodeK(o.k);if(c){saveCfg(c);toast('Canlı bağlantı ayarı yüklendi')}}
+  if(o.k){try{history.replaceState(null,'',location.pathname+(o.ekran?'#ekran':''))}catch(e){}}
+  if(o.ekran)openScreen();
+})();
+addEventListener('hashchange',function(){var o=parseHash();if(o.ekran&&!screenOpen)openScreen()});
+startSync();
 })();
 </script>
 </body>
